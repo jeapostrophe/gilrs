@@ -382,40 +382,62 @@ impl Gilrs {
     }
 }
 
-#[derive(Debug)]
 pub struct Gamepad {
-    uuid: Uuid,
     id: u32,
     is_connected: bool,
+    caps: Option<winapi::um::xinput::XINPUT_CAPABILITIES>,
+    caps_ex: Option<rusty_xinput::XINPUT_CAPABILITIES_EX>,
     xinput_handle: Arc<XInputHandle>,
+}
+impl std::fmt::Debug for Gamepad {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        f.debug_struct("Gamepad")
+            .field("id", &self.id)
+            .field("is_connected", &self.is_connected)
+            .field("caps", &"...")
+            .field("caps_ex", &self.caps_ex)
+            .finish()
+    }
 }
 
 impl Gamepad {
     fn new(id: u32, xinput_handle: Arc<XInputHandle>) -> Gamepad {
         let is_connected = xinput_handle.get_state(id).is_ok();
 
+        let caps = xinput_handle.get_capabilities(id).ok();
+        let caps_ex = xinput_handle.get_capabilities_ex(id).ok();
+
         Gamepad {
-            uuid: Uuid::nil(),
             id,
             is_connected,
             xinput_handle,
+            caps,
+            caps_ex,
         }
     }
 
     pub fn name(&self) -> &str {
-        "Xbox Controller"
+        "XInput Controller"
     }
 
     pub fn uuid(&self) -> Uuid {
-        self.uuid
+        let Some(cex) = self.caps_ex else {
+            return Uuid::nil();
+        };
+        let mut x = [0; 8];
+        if let Some(c) = self.caps {
+            x[0] = c.Type as u8;
+            x[1] = c.SubType as u8;
+        }
+        Uuid::from_fields(cex.vendor_id as u32, cex.product_id, cex.revision_id, &x)
     }
 
     pub fn vendor_id(&self) -> Option<u16> {
-        None
+        self.caps_ex.as_ref().map(|c| c.vendor_id)
     }
 
     pub fn product_id(&self) -> Option<u16> {
-        None
+        self.caps_ex.as_ref().map(|c| c.product_id)
     }
 
     pub fn is_connected(&self) -> bool {
@@ -455,7 +477,12 @@ impl Gamepad {
     }
 
     pub fn is_ff_supported(&self) -> bool {
-        true
+        if let Some(caps) = &self.caps {
+            // XXX maybe look at motor speed
+            caps.Flags & winapi::um::xinput::XINPUT_CAPS_FFB_SUPPORTED != 0
+        } else {
+            false
+        }
     }
 
     pub fn ff_device(&self) -> Option<FfDevice> {
