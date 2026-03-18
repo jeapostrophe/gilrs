@@ -483,6 +483,7 @@ impl MappingDb {
 
     pub fn add_env_mappings(&mut self) {
         if let Ok(mapping) = env::var("SDL_GAMECONTROLLERCONFIG") {
+            info!("Loading mapping from ENV: {}", mapping);
             self.insert(&mapping);
         }
     }
