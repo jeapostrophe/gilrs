@@ -467,7 +467,7 @@ impl Gilrs {
     ///     # break;
     /// }
     /// ```
-    pub fn gamepad(&self, id: GamepadId) -> Gamepad {
+    pub fn gamepad(&self, id: GamepadId) -> Gamepad<'_> {
         Gamepad {
             inner: self.inner.gamepad(id.0).unwrap(),
             data: &self.gamepads_data[id.0],
