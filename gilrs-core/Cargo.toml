@@ -44,6 +44,37 @@ windows = { version = ">=0.44, <=0.61", optional = true, features = [
     "Gaming_Input_ForceFeedback"
 ] }
 
+# GameController.framework, for the `ios` backend. Declared for **both** Apple
+# platforms rather than iOS alone: the `gc-backend` feature runs that same backend
+# on macOS so the iPad's input path can be developed against a real pad on a
+# desktop, and a `[target.'cfg(...)']` header cannot itself be feature-gated.
+# `default-features = false` throughout — `objc2-game-controller`'s default turns
+# on all sixty-nine of its classes, and this needs eight.
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+objc2 = { version = "0.6.4", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSString",
+    "NSDate",
+    # `NSObjCRuntime` is the non-obvious one: `NSDefaultRunLoopMode` and
+    # `runMode:beforeDate:` are gated on it as well as on `NSDate`/`NSRunLoop`,
+    # and without it they silently do not exist.
+    "NSObjCRuntime",
+    "NSRunLoop",
+    "NSEnumerator",
+] }
+objc2-game-controller = { version = "0.3.2", default-features = false, features = [
+    "GCController",
+    "GCDevice",
+    "GCExtendedGamepad",
+    "GCControllerButtonInput",
+    "GCControllerDirectionPad",
+    "GCControllerAxisInput",
+    "GCControllerElement",
+    "GCPhysicalInputProfile",
+] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = { version = "0.3" }
 web-sys = { version = "0.3", features = [
@@ -64,3 +95,7 @@ default = ["wgi"]
 serde-serialize = ["serde"]
 xinput = ["rusty-xinput", "winapi"]
 wgi = ["windows"]
+# Run the GameController (`ios`) backend on macOS instead of the IOKit one, so
+# the iPad's input path can be tested on a desktop. Inert on every other target:
+# iOS selects that backend regardless, and nothing else can.
+gc-backend = []

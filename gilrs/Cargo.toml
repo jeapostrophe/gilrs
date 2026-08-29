@@ -47,3 +47,6 @@ default = ["wgi"]
 serde-serialize = ["serde", "gilrs-core/serde-serialize"]
 xinput = ["gilrs-core/xinput"]
 wgi = ["gilrs-core/wgi"]
+# Pass-through so a consumer that depends on `gilrs` (not `gilrs-core`) can ask
+# for the GameController backend on macOS. See `gilrs-core`'s own entry.
+gc-backend = ["gilrs-core/gc-backend"]
