@@ -66,13 +66,27 @@ impl Gilrs {
             queue: VecDeque::new(),
             background_events_set: false,
         };
-        // **The boot touch, and it is load-bearing.** GameController initializes
-        // lazily on first contact with its API: measured on macOS 15.3.1, a
-        // process that pumps the run loop for 1.2s *before* calling anything
-        // still sees zero controllers, while one that calls `controllers()` first
-        // sees the attached pad after ~3 run-loop turns. So this call is not the
+        // **The boot touch. Load-bearing on macOS — and on iOS, poison if it
+        // happens before `UIApplicationMain`.** GameController initializes lazily
+        // on first contact with its API: measured on macOS 15.3.1, a process that
+        // pumps the run loop for 1.2s *before* calling anything still sees zero
+        // controllers, while one that calls `controllers()` first sees the
+        // attached pad after ~3 run-loop turns. So on macOS this call is not the
         // enumeration — it is what makes the enumeration possible. (Same finding
         // as MAME PR #15129, which fixed the identical symptom.)
+        //
+        // On iPadOS the same call made before `UIApplicationMain` breaks
+        // controller input **for the entire life of the process**, and does it
+        // silently: `controllers()` returns a fully-populated, correctly-mapped
+        // `GCExtendedGamepad` — 49 named elements, the right product category —
+        // whose values then never change, whose `valueChangedHandler` is never
+        // invoked, and for which `GCControllerDidConnectNotification` is never
+        // posted. Measured on iPadOS 26.4.2 against a wired DualShock-4-class
+        // stick: 9000 polls at 60 Hz of unbroken zeros. Construct the `Gilrs`
+        // after `UIApplicationMain` instead and the first `controllers()` comes
+        // back *empty*, the connect notification arrives ~11ms later, and input
+        // flows. So on iOS a consumer must not build a `Gilrs` until the app is
+        // running, and nothing in this function can enforce that for it.
         let _ = unsafe { GCController::controllers() };
         // Discover synchronously so `last_gamepad_hint` is right before the
         // wrapper's `finish_gamepads_creation` reads it — which is what makes
@@ -82,9 +96,25 @@ impl Gilrs {
         // run-loop turns on macOS — so give it a bounded moment before the first
         // enumeration. Discovering synchronously here is what lets
         // `last_gamepad_hint` be right before the wrapper reads it.
-        let deadline = Instant::now() + Duration::from_millis(50);
-        while unsafe { GCController::controllers() }.is_empty() && Instant::now() < deadline {
-            pump_for(Duration::from_millis(2));
+        //
+        // **Only when nobody else is running this loop**, for the reason
+        // [`pump_once`] gives at length and with one addition: this is the
+        // *construction* path, so a host that builds its `Gilrs` from inside its
+        // own run-loop callback pays the nested-activation abort here rather
+        // than at the first poll. winit's iOS backend does exactly that if a
+        // consumer constructs from `resumed`, and aborts with `ProcessingRedraws
+        // happened unexpectedly`.
+        //
+        // Skipping the wait costs nothing on a host with a running loop: it will
+        // deliver the pad through that loop within a frame or two, and every
+        // `poll` re-enumerates. What it buys is that a `Gilrs` built *after*
+        // `UIApplicationMain` — which on iPadOS is the only way a pad is ever
+        // readable at all — does not take the host down.
+        if !host_runs_loop() {
+            let deadline = Instant::now() + Duration::from_millis(50);
+            while unsafe { GCController::controllers() }.is_empty() && Instant::now() < deadline {
+                pump_for(Duration::from_millis(2));
+            }
         }
         gilrs.poll();
         Ok(gilrs)
@@ -206,9 +236,20 @@ fn default_mode() -> &'static objc2_foundation::NSRunLoopMode {
     unsafe { NSDefaultRunLoopMode }
 }
 
-fn pump_once() {
-    let rl = NSRunLoop::currentRunLoop();
+/// Whether some other code is already turning this thread's run loop.
+///
+/// `currentMode` is `nil` exactly when this thread's run loop is not running,
+/// so this is the question "is a host already servicing it" rather than "which
+/// OS is this". Both [`Gilrs::new`] and [`pump_once`] ask it, for the same
+/// reason and with the same consequence if they get it wrong: pumping inside
+/// someone else's run-loop callback starts a nested activation, which on iOS
+/// re-fires winit's observers while its `AppState` is mid-callback and aborts
+/// through `bug!`.
+fn host_runs_loop() -> bool {
+    NSRunLoop::currentRunLoop().currentMode().is_some()
+}
 
+fn pump_once() {
     // **Only pump a run loop nobody else is running, and this guard is the
     // difference between working and crashing the iOS host.**
     //
@@ -234,7 +275,7 @@ fn pump_once() {
     // differs between the two call sites rather than between the platforms. The
     // question is never "which OS" but "is someone else already turning this
     // loop", so that is what this asks.
-    if rl.currentMode().is_some() {
+    if host_runs_loop() {
         return;
     }
 
@@ -251,6 +292,7 @@ fn pump_once() {
     // p50 1us together. The tail belongs to whatever else is scheduled on the
     // thread, which is a second reason not to run it under a host that has its
     // own loop.
+    let rl = NSRunLoop::currentRunLoop();
     for _ in 0..64 {
         let now = NSDate::dateWithTimeIntervalSinceNow(0.0);
         if !rl.runMode_beforeDate(default_mode(), &now) {
