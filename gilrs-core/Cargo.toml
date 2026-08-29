@@ -63,6 +63,9 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSObjCRuntime",
     "NSRunLoop",
     "NSEnumerator",
+    # `NSRunLoop::currentMode` — how `pump_once` tells "nobody is running this
+    # loop" from "a host is already inside a callback on it".
+    "NSDictionary",
 ] }
 objc2-game-controller = { version = "0.3.2", default-features = false, features = [
     "GCController",

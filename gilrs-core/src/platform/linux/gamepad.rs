@@ -411,7 +411,7 @@ fn handle_inotify(
 }
 
 fn get_gamepad_path(name: &str) -> Option<(PathBuf, PathBuf)> {
-    let event_id =  name.strip_prefix("event")?;
+    let event_id = name.strip_prefix("event")?;
 
     if event_id.is_empty()
         || event_id

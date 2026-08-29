@@ -61,8 +61,11 @@ pub struct Gilrs {
 
 impl Gilrs {
     pub(crate) fn new() -> Result<Self, PlatformError> {
-        let mut gilrs =
-            Gilrs { gamepads: Vec::new(), queue: VecDeque::new(), background_events_set: false };
+        let mut gilrs = Gilrs {
+            gamepads: Vec::new(),
+            queue: VecDeque::new(),
+            background_events_set: false,
+        };
         // **The boot touch, and it is load-bearing.** GameController initializes
         // lazily on first contact with its API: measured on macOS 15.3.1, a
         // process that pumps the run loop for 1.2s *before* calling anything
@@ -160,7 +163,8 @@ impl Gilrs {
                 }
                 None => {
                     let id = self.gamepads.len();
-                    self.gamepads.push(Gamepad::new(controller.clone(), gamepad));
+                    self.gamepads
+                        .push(Gamepad::new(controller.clone(), gamepad));
                     seen.push(true);
                     self.queue.push_back(Event::new(id, EventType::Connected));
                 }
@@ -169,7 +173,8 @@ impl Gilrs {
         for (id, present) in seen.iter().enumerate() {
             if !present && self.gamepads[id].is_connected {
                 self.gamepads[id].is_connected = false;
-                self.queue.push_back(Event::new(id, EventType::Disconnected));
+                self.queue
+                    .push_back(Event::new(id, EventType::Disconnected));
             }
         }
 
@@ -202,6 +207,37 @@ fn default_mode() -> &'static objc2_foundation::NSRunLoopMode {
 }
 
 fn pump_once() {
+    let rl = NSRunLoop::currentRunLoop();
+
+    // **Only pump a run loop nobody else is running, and this guard is the
+    // difference between working and crashing the iOS host.**
+    //
+    // `currentMode` is `nil` exactly when this thread's run loop is not running.
+    // That distinguishes the two situations this backend is polled from:
+    //
+    // - **Nothing is driving the loop** — a terminal example, or `Gilrs::new`
+    //   before the host's event loop starts. GameController delivers device
+    //   arrival and input through the run loop, so if we do not turn it, nothing
+    //   ever happens. Pump.
+    // - **A host is already inside a run-loop callback** — on iOS the frontend
+    //   steps the emulator from winit's `about_to_wait`, which is dispatched from
+    //   a `kCFRunLoopBeforeWaiting` observer. Pumping *there* starts a nested
+    //   activation and re-fires winit's observers (they are registered in
+    //   `kCFRunLoopDefaultMode`) while its `AppState` is `InUserCallback` — a
+    //   state its `wakeup_transition` has no arm for, so it aborts through
+    //   `bug!`. Do not pump; the host's own loop is already servicing
+    //   GameController, and this poll only has to *read* what it left behind.
+    //
+    // A `cfg(target_os)` would get the common cases right and lie about the
+    // edges — `Gilrs::new` on iOS runs before `UIApplicationMain`, and the macOS
+    // frontend steps outside the winit handler, so on both hosts the answer
+    // differs between the two call sites rather than between the platforms. The
+    // question is never "which OS" but "is someone else already turning this
+    // loop", so that is what this asks.
+    if rl.currentMode().is_some() {
+        return;
+    }
+
     // **Drain, do not tick.** `runMode:beforeDate:` services at most *one* input
     // source per call and returns whether it ran at all, so a single call with a
     // now-date leaves anything queued behind it sitting there — which showed up
@@ -209,9 +245,12 @@ fn pump_once() {
     // it reports nothing left.
     //
     // The bound is a backstop, not a tuning knob: without it a source that
-    // re-arms itself every time it is serviced would spin here forever, and this
-    // runs inside the frontend's frame loop.
-    let rl = NSRunLoop::currentRunLoop();
+    // re-arms itself every time it is serviced would spin here forever. Measured
+    // cost when this path does run: p50 89us, p99 265us — and note that is the
+    // *whole run loop*, not GameController, whose seventeen element reads are
+    // p50 1us together. The tail belongs to whatever else is scheduled on the
+    // thread, which is a second reason not to run it under a host that has its
+    // own loop.
     for _ in 0..64 {
         let now = NSDate::dateWithTimeIntervalSinceNow(0.0);
         if !rl.runMode_beforeDate(default_mode(), &now) {
@@ -280,8 +319,13 @@ impl Gamepad {
         let name = unsafe { controller.vendorName() }
             .map(|s| s.to_string())
             .unwrap_or_else(|| "Unknown Controller".to_owned());
-        let mut gamepad =
-            Gamepad { controller, profile, name, is_connected: true, state: State::default() };
+        let mut gamepad = Gamepad {
+            controller,
+            profile,
+            name,
+            is_connected: true,
+            state: State::default(),
+        };
         // Seed from the live pad rather than from `State::default`, so a button
         // already held when the app starts does not arrive as a press.
         gamepad.state = gamepad.read();
@@ -341,7 +385,13 @@ impl Gamepad {
     /// Read once and append an event for everything that moved.
     fn diff(&mut self, id: usize, out: &mut Vec<Event>) {
         let now = self.read();
-        for (i, (&was, &is)) in self.state.buttons.iter().zip(now.buttons.iter()).enumerate() {
+        for (i, (&was, &is)) in self
+            .state
+            .buttons
+            .iter()
+            .zip(now.buttons.iter())
+            .enumerate()
+        {
             if was != is {
                 let code = native_ev_codes::BUTTONS[i];
                 out.push(Event::new(
@@ -435,8 +485,16 @@ impl Gamepad {
     /// through `btn_value`, which maps `min..max` onto `0.0..1.0` — giving it
     /// `-AXIS_MAX` as a floor would report a resting trigger as half-pressed.
     pub(crate) fn axis_info(&self, nec: EvCode) -> Option<&AxisInfo> {
-        const STICK: AxisInfo = AxisInfo { min: -AXIS_MAX, max: AXIS_MAX, deadzone: None };
-        const TRIGGER: AxisInfo = AxisInfo { min: 0, max: AXIS_MAX, deadzone: None };
+        const STICK: AxisInfo = AxisInfo {
+            min: -AXIS_MAX,
+            max: AXIS_MAX,
+            deadzone: None,
+        };
+        const TRIGGER: AxisInfo = AxisInfo {
+            min: 0,
+            max: AXIS_MAX,
+            deadzone: None,
+        };
         match nec {
             native_ev_codes::AXIS_LT2 | native_ev_codes::AXIS_RT2 => Some(&TRIGGER),
             _ if native_ev_codes::AXES.contains(&nec) => Some(&STICK),
@@ -449,7 +507,10 @@ impl Gamepad {
     }
 }
 
-#[cfg_attr(feature = "serde-serialize", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde-serialize",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct EvCode(u8);
 
@@ -541,6 +602,12 @@ pub mod native_ev_codes {
     ];
 
     /// Same rule as [`BUTTONS`]: this order is `Gamepad::read`'s axis order.
-    pub(super) static AXES: [EvCode; 6] =
-        [AXIS_LSTICKX, AXIS_LSTICKY, AXIS_RSTICKX, AXIS_RSTICKY, AXIS_LT2, AXIS_RT2];
+    pub(super) static AXES: [EvCode; 6] = [
+        AXIS_LSTICKX,
+        AXIS_LSTICKY,
+        AXIS_RSTICKX,
+        AXIS_RSTICKY,
+        AXIS_LT2,
+        AXIS_RT2,
+    ];
 }

@@ -24,7 +24,7 @@ mod ff;
 mod gamepad;
 
 pub use self::ff::Device as FfDevice;
-pub use self::gamepad::{EvCode, Gamepad, Gilrs, native_ev_codes};
+pub use self::gamepad::{native_ev_codes, EvCode, Gamepad, Gilrs};
 
 /// `false`: GameController's stick Y axis is **up-positive** already
 /// (`GCControllerDirectionPad.yAxis` is documented as `-1` down / `1` up), which
