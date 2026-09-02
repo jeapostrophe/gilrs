@@ -11,7 +11,10 @@ use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRunLoop};
-use objc2_game_controller::{GCController, GCDevice, GCExtendedGamepad};
+use objc2_game_controller::{
+    GCController, GCControllerButtonInput, GCDevice, GCExtendedGamepad, GCSystemGestureState,
+    GCXboxGamepad,
+};
 use uuid::Uuid;
 
 use super::FfDevice;
@@ -188,6 +191,19 @@ impl Gilrs {
                     seen[id] = true;
                     if !self.gamepads[id].is_connected {
                         self.gamepads[id].is_connected = true;
+                        // Re-claim, because this path does NOT go through
+                        // `Gamepad::new`: the framework handed back the *same*
+                        // `GCController` instance for a pad that dropped and came
+                        // back, so the slot is reused and the claim made at
+                        // construction would never be repeated. Whether iOS resets
+                        // `preferredSystemGestureState` across a reconnect is not
+                        // documented either way, and on an arcade station an
+                        // unplug/replug of the stick is routine — so re-assert it
+                        // rather than find out by losing Select again. Three objc
+                        // message sends, and setting a state that is already set is
+                        // a no-op.
+                        let pad = &self.gamepads[id];
+                        claim_system_gesture_buttons(&pad.profile, &pad.name);
                         self.queue.push_back(Event::new(id, EventType::Connected));
                     }
                 }
@@ -356,6 +372,86 @@ impl std::fmt::Debug for Gamepad {
     }
 }
 
+/// Take the menu-class buttons back from iOS, so the app — not the system —
+/// gets them.
+///
+/// **The bug this fixes.** `GCControllerElement.preferredSystemGestureState`
+/// governs what happens to a button the system has bound to a *system gesture*:
+/// at the default `Enabled` the OS gesture recognizer runs **first**, and if it
+/// claims the press the app never learns the button was touched at all (Apple's
+/// `GCControllerElement.h`, verbatim: "If a long press is detected, input will
+/// not be forwarded to your app (your application won't see the Options button
+/// was pressed at all)"). On iPadOS 26 the Games overlay is bound this way, and
+/// the symptom on the arcade station was exact: the stick's **Select** — a
+/// GP2040-CE in PS4 mode, which GameController maps to
+/// `GCExtendedGamepad.buttonOptions` — never reached the emulator, so no coin
+/// could be inserted, and Settings ▸ General ▸ Game Controllers does not even
+/// list the button to turn it off.
+///
+/// `Disabled` is the right level, not `AlwaysReceive`: `AlwaysReceive` only
+/// removes the *delay* and still lets the gesture fire alongside the press, so a
+/// held Select would keep summoning the overlay over a running game.
+///
+/// **What is claimed, and what is deliberately not.**
+///
+/// - `buttonOptions` (PS4 *Share*, the stick's Select) is claimed: it is the
+///   button the symptom was about, and on the iPad the system confirmed it —
+///   `isBoundToSystemGesture` came back true for it and for nothing else.
+/// - `buttonMenu` (PS4 *Options*, the stick's Start) is claimed too, as
+///   insurance rather than on evidence. Apple's header calls it the "primary
+///   menu button" and `buttonOptions` the "secondary" one, but it never says the
+///   pair is a reserved *class*, and `boundToSystemGesture` "defaults to NO for
+///   most elements" — so this is a cheap hedge against the next iPadOS binding a
+///   button an arcade stick uses, not a documented requirement.
+/// - `buttonShare`, where it exists, is claimed too. It lives on
+///   `GCXboxGamepad`, not on `GCExtendedGamepad`, so it needs the downcast
+///   below; `GCXboxGamepad.h` says outright that it "is reserved by the system
+///   for screenshot and video recording gestures" and names this same property
+///   as the way to take it.
+/// - **`buttonHome` is left alone, on purpose.** It is the one button whose
+///   system binding is the user's way *out* of a full-screen app, and the
+///   station must never be the thing that traps them — kiosk-ing this app is
+///   Guided Access's job, which the OS gates behind the user's own passcode and
+///   which no in-app setting can substitute for. Apple's header agrees that it
+///   is the system's to consume ("If the system does not consume button home
+///   events, they will be passed to your application"), and
+///   `GCControllerElement.h` recommends the default in general. Nothing on the
+///   arcade stick is bound to Home, so claiming it would buy nothing and cost
+///   the escape hatch.
+///
+/// The property is documented as *preferred*, "not guaranteed to be respected by
+/// the system", so this logs what the OS said each button's binding was before
+/// the change — that line is the only evidence available on-device about whether
+/// a swallowed button was in fact system-bound.
+fn claim_system_gesture_buttons(profile: &GCExtendedGamepad, name: &str) {
+    let mut claimed: Vec<&'static str> = Vec::new();
+    let mut bound: Vec<&'static str> = Vec::new();
+    // `downcast_ref` is safe in objc2 — it reaches `AnyObject::downcast_ref`
+    // through `Deref` and checks the class. Only the message sends below need an
+    // `unsafe`, and they get one each rather than one wrapped around the whole
+    // body, so the bookkeeping and the logging are not sitting inside it.
+    let xbox = profile.downcast_ref::<GCXboxGamepad>();
+    let candidates: [(&'static str, Option<Retained<GCControllerButtonInput>>); 3] = unsafe {
+        [
+            ("buttonOptions", profile.buttonOptions()),
+            ("buttonMenu", Some(profile.buttonMenu())),
+            ("buttonShare", xbox.and_then(|x| x.buttonShare())),
+        ]
+    };
+    for (button_name, button) in candidates {
+        let Some(button) = button else { continue };
+        if unsafe { button.isBoundToSystemGesture() } {
+            bound.push(button_name);
+        }
+        unsafe { button.setPreferredSystemGestureState(GCSystemGestureState::Disabled) };
+        claimed.push(button_name);
+    }
+    log::info!(
+        "{name}: claiming {claimed:?} from the system gesture recognizer \
+         (the system reported {bound:?} bound to a gesture); buttonHome left to the system"
+    );
+}
+
 impl Gamepad {
     fn new(controller: Retained<GCController>, profile: Retained<GCExtendedGamepad>) -> Gamepad {
         let name = unsafe { controller.vendorName() }
@@ -368,6 +464,7 @@ impl Gamepad {
             is_connected: true,
             state: State::default(),
         };
+        claim_system_gesture_buttons(&gamepad.profile, &gamepad.name);
         // Seed from the live pad rather than from `State::default`, so a button
         // already held when the app starts does not arrive as a press.
         gamepad.state = gamepad.read();

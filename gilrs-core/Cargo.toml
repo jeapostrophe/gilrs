@@ -76,6 +76,10 @@ objc2-game-controller = { version = "0.3.2", default-features = false, features 
     "GCControllerAxisInput",
     "GCControllerElement",
     "GCPhysicalInputProfile",
+    # `GCXboxGamepad` earns its place for exactly one property — `buttonShare`,
+    # the only system-gesture-reserved button that is NOT on
+    # `GCExtendedGamepad`. See `claim_system_gesture_buttons`.
+    "GCXboxGamepad",
 ] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
