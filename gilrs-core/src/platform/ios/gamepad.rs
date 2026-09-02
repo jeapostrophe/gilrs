@@ -408,16 +408,17 @@ impl std::fmt::Debug for Gamepad {
 ///   below; `GCXboxGamepad.h` says outright that it "is reserved by the system
 ///   for screenshot and video recording gestures" and names this same property
 ///   as the way to take it.
-/// - **`buttonHome` is left alone, on purpose.** It is the one button whose
-///   system binding is the user's way *out* of a full-screen app, and the
-///   station must never be the thing that traps them — kiosk-ing this app is
-///   Guided Access's job, which the OS gates behind the user's own passcode and
-///   which no in-app setting can substitute for. Apple's header agrees that it
-///   is the system's to consume ("If the system does not consume button home
-///   events, they will be passed to your application"), and
-///   `GCControllerElement.h` recommends the default in general. Nothing on the
-///   arcade stick is bound to Home, so claiming it would buy nothing and cost
-///   the escape hatch.
+/// - **`buttonHome` is claimed as well, at the user's direction.** The first
+///   cut left it to the system, reasoning that its binding is the user's way
+///   *out* of a full-screen app; Jay ruled otherwise (2026-09-01): "I would
+///   claim the Home button, FWIW. I have no use for Apple Games and would want
+///   every button available for binding in retro-trainer." Leaving the app is
+///   Guided Access's job on the station — the OS gates it behind the user's
+///   own passcode, and no controller button is part of that — so the escape
+///   hatch this button offered was never the one in use. Apple's header allows
+///   it ("If the system does not consume button home events, they will be
+///   passed to your application"). Where the profile has no Home button the
+///   entry is simply absent.
 ///
 /// The property is documented as *preferred*, "not guaranteed to be respected by
 /// the system", so this logs what the OS said each button's binding was before
@@ -431,11 +432,12 @@ fn claim_system_gesture_buttons(profile: &GCExtendedGamepad, name: &str) {
     // `unsafe`, and they get one each rather than one wrapped around the whole
     // body, so the bookkeeping and the logging are not sitting inside it.
     let xbox = profile.downcast_ref::<GCXboxGamepad>();
-    let candidates: [(&'static str, Option<Retained<GCControllerButtonInput>>); 3] = unsafe {
+    let candidates: [(&'static str, Option<Retained<GCControllerButtonInput>>); 4] = unsafe {
         [
             ("buttonOptions", profile.buttonOptions()),
             ("buttonMenu", Some(profile.buttonMenu())),
             ("buttonShare", xbox.and_then(|x| x.buttonShare())),
+            ("buttonHome", profile.buttonHome()),
         ]
     };
     for (button_name, button) in candidates {
@@ -448,7 +450,7 @@ fn claim_system_gesture_buttons(profile: &GCExtendedGamepad, name: &str) {
     }
     log::info!(
         "{name}: claiming {claimed:?} from the system gesture recognizer \
-         (the system reported {bound:?} bound to a gesture); buttonHome left to the system"
+         (the system reported {bound:?} bound to a gesture)"
     );
 }
 
